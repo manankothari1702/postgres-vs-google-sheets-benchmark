@@ -22,6 +22,7 @@ function doGet(e) {
         filter: "POST ?action=filter",
         sort: "POST ?action=sort",
         analytics: "POST ?action=analytics",
+        clear: "POST ?action=clear",
         verify: "GET ?action=verify"
       }
     });
@@ -58,6 +59,10 @@ function doPost(e) {
 
     if (action === "analytics") {
       return analyticsData(e);
+    }
+
+    if (action === "clear") {
+      return clearSheet();
     }
 
     return json({
@@ -419,6 +424,37 @@ function analyticsData() {
     durationMs: durationMs,
     totalRows: totalRows,
     data: data
+  });
+}
+
+/* ---------- CLEAR ---------- */
+
+/**
+ * Removes every imported data row and leaves row 1, the header, untouched.
+ */
+function clearSheet() {
+
+  const sheet = SpreadsheetApp
+    .getActiveSpreadsheet()
+    .getSheetByName("customers");
+
+  if (!sheet) {
+    throw new Error("Sheet 'customers' not found.");
+  }
+
+  const rowsRemoved = Math.max(sheet.getLastRow() - 1, 0);
+
+  if (rowsRemoved > 0) {
+    // Deleting the rows rather than clearing them keeps the sheet compact, so
+    // the next import does not have to grow it back.
+    sheet.deleteRows(2, rowsRemoved);
+  }
+
+  SpreadsheetApp.flush();
+
+  return json({
+    success: true,
+    rowsRemoved: rowsRemoved
   });
 }
 

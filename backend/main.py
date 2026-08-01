@@ -356,3 +356,35 @@ def google_analytics():
     )
     with urllib.request.urlopen(request, timeout=900) as response:
         return json.loads(response.read())
+
+
+@app.post("/maintenance/postgres/clear")
+def clear_postgres():
+    with psycopg.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cur:
+            # TRUNCATE reports no row count, so the table is counted first to
+            # report how much was removed.
+            cur.execute("SELECT COUNT(*) FROM customers")
+            rows_removed = cur.fetchone()[0]
+            cur.execute("TRUNCATE customers RESTART IDENTITY")
+
+    return {"rowsRemoved": rows_removed}
+
+
+@app.post("/maintenance/google/clear")
+def clear_google():
+    if not APPS_SCRIPT_URL:
+        raise HTTPException(
+            status_code=400,
+            detail="APPS_SCRIPT_URL is not set. Deploy apps-script/Code.gs as a web"
+            " app and set APPS_SCRIPT_URL to its /exec URL.",
+        )
+
+    request = urllib.request.Request(
+        APPS_SCRIPT_URL + "?action=clear",
+        data=json.dumps({}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=900) as response:
+        return json.loads(response.read())

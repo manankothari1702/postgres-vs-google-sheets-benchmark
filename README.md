@@ -1,6 +1,6 @@
 # PostgreSQL vs Google Sheets — Interactive Database Benchmark
 
-**v1.0.0**
+**v1.1.1**
 
 Runs the same four operations — Search, Filter, Sort, Analytics — against the same
 100,000-row dataset held in **PostgreSQL** and in **Google Sheets**, then reports
@@ -9,6 +9,40 @@ execution time side by side.
 The point is a fair comparison. Both engines are loaded from one CSV, both run
 semantically identical operations, and results are validated for exact parity
 before timings are compared.
+
+## Project highlights
+
+- **One dataset, two engines.** A single generated CSV is imported into both
+  PostgreSQL and Google Sheets, so the workloads are genuinely identical.
+- **A readiness gate.** Benchmarks stay disabled until both engines report the
+  same row count.
+- **Executive dashboard.** Dataset size, per-engine averages, average speedup,
+  and the overall winner, all recomputed as each operation finishes.
+- **Performance charts.** Execution time and speedup rendered as animated bars
+  with no charting library — CSS transitions only.
+- **Benchmark history.** Every completed session is saved to LocalStorage and
+  can be reopened for a per-operation breakdown.
+- **Maintenance panel.** Clear PostgreSQL, clear the sheet, or reset the whole
+  demo without touching the database by hand.
+- **Honest methodology.** Timing boundaries and known asymmetries are documented
+  in the app itself, not just here.
+
+## Features
+
+| Area | What it does |
+|---|---|
+| Dataset setup | Generates `customers.csv` with Faker, imports it into PostgreSQL via `COPY` and into the sheet via Apps Script |
+| Readiness gate | Compares row counts across engines; blocks benchmarking on mismatch |
+| Benchmarks | Search, Filter, Sort, Analytics — one card per engine, run independently |
+| Executive dashboard | Dataset size, PostgreSQL average, Google average, average speedup, overall winner |
+| Performance visualization | Execution-time bars (logarithmic width) and speedup bars (linear width) |
+| Benchmark summary | Per-operation table with both timings and the speedup |
+| Comparison cards | Side-by-side figures for each completed pair |
+| Benchmark history | Newest-first sessions in LocalStorage, capped at 20, expandable |
+| Maintenance | Reset results, clear PostgreSQL, clear Google Sheets, clear everything |
+| Maintenance status | Per-engine Ready/Empty plus the last action, its time, and rows removed |
+| Methodology & notes | In-app explanation of the dataset, timing boundaries, and fairness rules |
+| Export | Downloads the current run as JSON |
 
 ## Architecture
 
@@ -39,13 +73,32 @@ imported into both engines so they hold identical rows in identical order.
 
 ## Screenshots
 
-<!-- Add dashboard screenshots here. Suggested captures:
-     - docs/dashboard.png       full dashboard with all four comparisons
-     - docs/readiness.png       the 🟢 Benchmark Ready banner
-     - docs/mismatch.png        the ⚠ dataset mismatch warning
--->
+Drop the captures into `docs/` and the placeholders below resolve.
+
+| Capture | Path | What to show |
+|---|---|---|
+| Executive dashboard | `docs/dashboard.png` | Header chips plus all five KPI cards after a full sweep |
+| Performance visualization | `docs/charts.png` | Both charts with all four operations plotted |
+| Benchmark history | `docs/history.png` | Several sessions, newest one expanded |
+| Maintenance panel | `docs/maintenance.png` | The four buttons and the status card |
+| Readiness states | `docs/readiness.png` | The 🟢 Benchmark Ready banner and the ⚠ mismatch warning |
+
+<!-- ![Executive dashboard](docs/dashboard.png) -->
+<!-- ![Performance visualization](docs/charts.png) -->
+<!-- ![Benchmark history](docs/history.png) -->
+<!-- ![Maintenance panel](docs/maintenance.png) -->
+<!-- ![Readiness states](docs/readiness.png) -->
 
 _Screenshots pending._
+
+### Demo
+
+A short capture of a full run — generate, import, verify, run all eight cards,
+watch the charts and history populate.
+
+<!-- ![Full benchmark run](docs/demo.gif) -->
+
+_GIF pending (`docs/demo.gif`)._
 
 ## Setup
 
@@ -143,9 +196,32 @@ Open `http://localhost:5173`.
 2. Click **Import to PostgreSQL**, then **Import Google Sheets**.
 3. Click **Verify Dataset**. Benchmark buttons stay disabled until both engines
    report the same row count.
-4. Run each operation on both engines. The summary table and comparison cards
-   populate as pairs complete.
-5. **Export Results** downloads a JSON report.
+4. Run each operation on both engines. The summary table, comparison cards, and
+   both charts populate as pairs complete.
+5. Once all four operations have finished on both engines, the session is saved
+   to **Benchmark History** automatically.
+6. **Export Results** downloads a JSON report.
+7. **Maintenance** resets the demo: clear results only, clear either engine, or
+   clear everything.
+
+## How benchmarking works
+
+1. **Generate.** `/generate` writes `backend/customers.csv` with Faker. This file
+   is the single source of truth for both engines.
+2. **Import.** `/import/postgres` truncates the table and bulk-loads the CSV with
+   `COPY`. `/import/google` posts the same bytes to Apps Script, which writes
+   every row into the sheet.
+3. **Verify.** The dashboard calls both analytics endpoints and compares
+   `totalRows`. Benchmark buttons unlock only when the counts match.
+4. **Run.** Each card posts to its own endpoint. PostgreSQL times the SQL;
+   Apps Script times its own scan. Neither timer includes the HTTP hop.
+5. **Compare.** Speedup is `googleDurationMs ÷ postgresDurationMs`. Averages
+   cover completed operations only, so figures are meaningful mid-sweep.
+6. **Record.** When all eight cards have completed, one history entry is written
+   to LocalStorage with both averages, the winner, and the four timings.
+
+Details of what is and is not measured are in [Benchmark methodology](#benchmark-methodology)
+and [Timing methodology](#timing-methodology).
 
 ## Endpoints
 
@@ -156,6 +232,13 @@ Open `http://localhost:5173`.
 | `POST` | `/generate` | Writes `backend/customers.csv`. Body `{"rows": 100000}` → `{"rows": …, "file": "customers.csv"}` |
 | `POST` | `/import/postgres` | Truncates and bulk-loads the CSV via `COPY` → `{"rows": …, "insertTimeMs": …}` (timing covers only the `COPY`) |
 | `POST` | `/import/google` | Posts the CSV as `text/csv` to `?action=import`, returns the Apps Script response unchanged |
+
+### Maintenance
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/maintenance/postgres/clear` | `TRUNCATE customers RESTART IDENTITY` → `{"rowsRemoved": …}` (counted before truncating) |
+| `POST` | `/maintenance/google/clear` | Posts to `?action=clear`, returns the Apps Script response unchanged |
 
 ### Benchmarks
 
@@ -187,6 +270,7 @@ forward the request unchanged and return the Apps Script JSON unchanged.
 | `?action=filter` | `POST` | Linear scan, city contains + status exact |
 | `?action=sort` | `POST` | Full sort by purchase descending, top 20 |
 | `?action=analytics` | `POST` | Single pass: sum, average, and group-by-city |
+| `?action=clear` | `POST` | Deletes every data row, keeps row 1 → `{"success": true, "rowsRemoved": …}` |
 | `?action=verify` | `GET` | Manual diagnostic → `{"success": true, "rows": …, "columns": […]}` |
 
 `?action=verify` is a manual check only — the dashboard's readiness gate uses the
@@ -294,3 +378,91 @@ allows all origins.
 **Dataset drift is not detected automatically.** The readiness gate compares row
 counts, not contents. Importing different CSVs into each engine with the same row
 count would pass verification.
+
+**History is per-browser.** Benchmark history lives in LocalStorage, capped at 20
+sessions. Clearing site data loses it; it does not sync between machines.
+
+**Single run per measurement.** Each timing is one execution, not a median of
+several. Apps Script timings in particular vary between runs.
+
+## Roadmap
+
+Not implemented, listed so the boundaries of v1.1.1 are clear:
+
+- PDF export of a benchmark session
+- Repeat runs with median and standard deviation
+- Dark mode
+- Docker Compose for the whole stack
+- Additional engines (SQLite, MySQL, Airtable)
+- Automated test suite covering parity between engines
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+- Keep the benchmark fair: any change to one engine's operation needs the
+  matching change on the other, and parity must still hold.
+- Match the existing style — no new dependencies, no abstractions for one-time
+  logic, comments only where the reasoning is not obvious from the code.
+- Run `npm run lint` and `npm run build` in `frontend/` before opening a PR.
+- Describe how you verified the change. Timings are environment-specific, so
+  include your dataset size and machine when reporting performance numbers.
+
+## License
+
+Released under the MIT License. A `LICENSE` file is not yet committed — add one
+before publishing if you intend the MIT terms to be binding. Until then the code
+is provided as-is for educational use.
+
+## Version history
+
+### v1.1.1 — current release
+
+**Release highlights**
+
+- One-click dataset preparation
+- One-click benchmark reset
+- Guided workflow progress
+- Simplified demo experience
+- Executive dashboard
+- Performance charts
+- Benchmark history
+- Improved accessibility
+- Better error handling
+- Better maintenance tools
+
+**Changes**
+
+- `🚀 Prepare Benchmark Dataset` replaces the three separate setup buttons and
+  runs generate → import PostgreSQL → import Google Sheets in order, stopping at
+  the first failure
+- `🧹 Reset Benchmark Environment` replaces the four separate maintenance
+  buttons and runs reset results → clear PostgreSQL → clear Google Sheets
+- Live workflow checklists that advance only when a real step completes
+- Both panels keep every original button under a collapsed **Advanced** section
+- Concurrency lock: neither workflow can start while the other is running, and
+  Verify Dataset and the benchmark buttons are disabled throughout
+- Benchmark version shown in the Executive Dashboard header
+
+### v1.1.0
+
+- Executive dashboard with dataset size, per-engine averages, average speedup,
+  and overall winner
+- Performance visualization: execution-time bars on a logarithmic scale and
+  speedup bars on a linear scale, animated with CSS transitions
+- Maintenance panel — reset results, clear PostgreSQL, clear Google Sheets,
+  clear everything — plus `/maintenance/*` endpoints and the `?action=clear`
+  Apps Script action
+- Maintenance status card reporting each engine as Ready or Empty, with the last
+  action, its timestamp, and rows removed
+- Benchmark history in LocalStorage: automatic saving after a full sweep,
+  newest-first cards capped at 20, expandable per-operation detail
+- In-app benchmark methodology and benchmark notes
+- Release polish: About section, footer, improved empty states, consistent
+  section styling, accessibility pass, page metadata
+
+### v1.0.0
+
+- Dataset generation, import into PostgreSQL and Google Sheets, readiness gate
+- Search, Filter, Sort, and Analytics benchmarks on both engines
+- Benchmark summary table, comparison cards, and JSON export
