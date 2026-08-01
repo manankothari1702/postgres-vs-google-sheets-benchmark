@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL
 
 const BENCHMARK_VERSION = 'v1.1.1'
 
