@@ -1,5 +1,6 @@
 import csv
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -20,6 +21,11 @@ DB_CONFIG = {
     "dbname": os.getenv("DB_NAME", "benchmark"),
     "user": os.getenv("DB_USER", "postgres"),
     "password": os.getenv("DB_PASSWORD", "postgres"),
+    # Without this libpq waits indefinitely whenever something accepts the TCP
+    # connection but never answers as PostgreSQL (a stopped container behind a
+    # port proxy, a load balancer in front of a dead backend). Requests would
+    # hang instead of failing, so the connection attempt is bounded.
+    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
 }
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "customers.csv")
@@ -35,8 +41,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-with psycopg.connect(**DB_CONFIG) as conn:
-    conn.execute("""
+CREATE_CUSTOMERS_TABLE = """
         CREATE TABLE IF NOT EXISTS customers (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -47,7 +52,38 @@ with psycopg.connect(**DB_CONFIG) as conn:
             purchase NUMERIC(10, 2) NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
-    """)
+    """
+
+_schema_ready = False
+
+
+def get_connection():
+    """Open a PostgreSQL connection for the caller to use as a context manager.
+
+    Connections are opened per request rather than at import so uvicorn still
+    boots, and /docs still loads, while PostgreSQL is unavailable. The table is
+    created on the first successful connection for the same reason, so the app
+    also recovers on its own once the database comes back.
+
+    Callers hold this inside `with`, exactly as they held psycopg.connect(),
+    so commit/rollback and close behaviour is unchanged.
+    """
+    global _schema_ready
+
+    try:
+        conn = psycopg.connect(**DB_CONFIG)
+        if not _schema_ready:
+            conn.execute(CREATE_CUSTOMERS_TABLE)
+            conn.commit()
+            _schema_ready = True
+        return conn
+    except psycopg.Error as exc:
+        # The 503 detail stays deliberately vague because psycopg embeds host,
+        # port, and user in its messages. The cause goes to the log instead.
+        logging.exception("PostgreSQL connection failed")
+        raise HTTPException(
+            status_code=503, detail="PostgreSQL is unavailable."
+        ) from exc
 
 
 class GenerateRequest(BaseModel):
@@ -87,7 +123,7 @@ def import_postgres():
             status_code=400, detail="customers.csv not found. Generate the CSV first."
         )
 
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE customers RESTART IDENTITY")
 
@@ -143,7 +179,7 @@ class FilterRequest(BaseModel):
 
 @app.post("/search")
 def search(req: SearchRequest):
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             # Neutralise LIKE wildcards so the query is matched literally, the
             # way JavaScript indexOf does in the Apps Script search. Backslash
@@ -208,7 +244,7 @@ def escape_like(value: str) -> str:
 
 @app.post("/filter")
 def filter_customers(req: FilterRequest):
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             city_pattern = f"%{escape_like(req.city)}%"
             # An empty status falls back to '%', which matches every row.
@@ -260,7 +296,7 @@ def google_filter(req: FilterRequest):
 
 @app.post("/sort")
 def sort_customers():
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             start = time.perf_counter()
             cur.execute("SELECT COUNT(*) AS total FROM customers")
@@ -303,7 +339,7 @@ def google_sort():
 
 @app.post("/analytics")
 def analytics():
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             start = time.perf_counter()
             cur.execute(
@@ -360,7 +396,7 @@ def google_analytics():
 
 @app.post("/maintenance/postgres/clear")
 def clear_postgres():
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with get_connection() as conn:
         with conn.cursor() as cur:
             # TRUNCATE reports no row count, so the table is counted first to
             # report how much was removed.
